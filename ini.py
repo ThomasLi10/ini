@@ -13,20 +13,23 @@ import subprocess
 from typing import Union,Any
 
 #%% Patterns
-pRef = r'\%([^\%]+)\%'
+pRef = r'\%([^\%\s]+)\%'
 pCmd = r'\$\((.+)\)'
 pRep = r'\$(\w+)\$'
-PATT = { 'include'      : r'^include\s+<(.*ini)>\s*$',
-         'empty'        : r'^\s*$',
-         'header'       : r'^\[(.*)\]\s*$',
-         'scala'        : r'^([\w\.]+)\s*\=\s*([^\[\]]+)\s*$',
-         'scala_env'    : r'^([\w\.]+)\s*\|=\s*([^\[\]]+)\s*$',
-         'vec'          : r'^([\w\.]+)\s*\=\s*\[(.*)\]\s*$',
-         'vec_env'      : r'^([\w\.]+)\s*\|=\s*\[(.*)\]\s*$',
-         'vec_start'    : r'^([\w\.]+)\s*\=\s*\[([^\]]*)$',
-         'vec_start_env': r'^([\w\.]+)\s*\|=\s*\[([^\]]*)$',
-         'vec_mid'      : r'\s*([^<>\[\]]+)\s*$',
-         'vec_end'      : r'\s*([^\[]*)\]\s*$',
+PATT = { 'include'          : r'^include\s+<(.*ini)>\s*$',
+         'empty'            : r'^\s*$',
+         'header'           : r'^\[(.*)\]\s*$',
+         'scala'            : r'^([\w\.]+)\s*\=\s*([^\[\]]+)\s*$',
+         'scala_env'        : r'^([\w\.]+)\s*\|=\s*([^\[\]]+)\s*$',
+         'scala_last'       : r'^([\w\.]+)\s*\$=\s*([^\[\]]+)\s*$',
+         'vec'              : r'^([\w\.]+)\s*\=\s*\[(.*)\]\s*$',
+         'vec_env'          : r'^([\w\.]+)\s*\|=\s*\[(.*)\]\s*$',
+         'vec_last'         : r'^([\w\.]+)\s*\$=\s*\[(.*)\]\s*$',
+         'vec_start'        : r'^([\w\.]+)\s*\=\s*\[([^\]]*)$',
+         'vec_start_env'    : r'^([\w\.]+)\s*\|=\s*\[([^\]]*)$',
+         'vec_start_last'   : r'^([\w\.]+)\s*\$=\s*\[([^\]]*)$',
+         'vec_mid'          : r'\s*([^<>\[\]]+)\s*$',
+         'vec_end'          : r'\s*([^\[]*)\]\s*$',
         }
 
 #%% Class of Ini
@@ -50,7 +53,8 @@ class Ini():
         keys : list
             All of the keys of Ini object.
         '''
-        self.fini = fini.replace('~',os.environ['HOME'])
+        self.fini = fini
+        #self.fini = fini.replace('~',os.environ['HOME'])  # Unrecognizable in condor
     # Init global dict
         self._init()
     # Parse
@@ -81,6 +85,7 @@ class Ini():
         push(self.fini,stack_dir,stack_fini,stack_ptr)
     # 逐行分析
         ptr = 0
+        keys2rep = []
         self.header = None
         while ptr < len(self.lines):
             l = self.lines[ptr]
@@ -124,7 +129,7 @@ class Ini():
                 elif type_ == 'header':
                     self.header = val[0].upper()
             # assignment start
-                elif type_ in ['scala','scala_env','vec','vec_start','vec_env','vec_start_env']:
+                elif type_ in ['scala','scala_env','scala_last','vec','vec_start','vec_env','vec_start_env']:
                 # check header
                     if self.header is None:
                         raise INIFormatError('No header defined yet! ( file: {}, line: {} ).'.format(stack_fini[-1],stack_ptr[-1]+1))
@@ -139,17 +144,25 @@ class Ini():
                             self.d[field] = rep_blanks(self._true_value(self.env[field]))
                         else:
                             self.d[field] = rep_blanks(self._true_value(v))
+                    elif type_ == 'scala_last':
+                        # 放到最后才做 %xxx% 的替换
+                        self.d[field] = rep_blanks(v)
+                        keys2rep.append(field)
                     elif type_ == 'vec':
                         self.d[field] = rep_blanks(self._true_value(rep_blanks(v)))
-                    elif type_ == 'vec_start':
-                        value_str = rep_blanks(v)
-                        ignore_vec = False
                     elif type_ == 'vec_env':
                         # 先读环境变量，若没有环境变量再读文件中的值
                         if field in self.env:
                             self.d[field] = rep_blanks(self._true_value(rep_blanks(self.env[field])))
                         else:
                             self.d[field] = rep_blanks(self._true_value(rep_blanks(v)))
+                    elif type_ == 'vec_last':
+                        # 放到最后才做 %xxx% 的替换
+                        self.d[field] = rep_blanks(v)
+                        keys2rep.append(field)
+                    elif type_ == 'vec_start':
+                        value_str = rep_blanks(v)
+                        ignore_vec = False
                     elif type_ == 'vec_start_env':
                         # 先读环境变量，若没有环境变量再读文件中的值
                         if field in self.env:
@@ -159,6 +172,10 @@ class Ini():
                         else:
                             value_str = rep_blanks(v)
                             ignore_vec = False
+                    elif type_ == 'vec_start_last':
+                        value_str = rep_blanks(v)
+                        ignore_vec = False
+                        keys2rep.append(field)
                 elif type_ in ['vec_mid','vec_end']:
                     if ignore_vec: 
                         ptr += 1
@@ -173,6 +190,12 @@ class Ini():
             # move
                 ptr += 1
                 stack_ptr[-1] += 1
+    # replace at last
+        if keys2rep:
+            for k in keys2rep:
+                self.d[k] = self._true_value(self.d[k])
+            for k in self.d:
+                self.d[k] = self._true_value(self.d[k])
     # context
         self.context = '\n'.join(self.lines)
     # keys
